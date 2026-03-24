@@ -1,16 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useStore } from '../store/useStore';
 import { Card, Button, Input, Modal } from '../components/ui';
-import { Edit2, Calculator, Plus, Trash2 } from 'lucide-react';
+import { Edit2, Calculator, Plus, Trash2, FileUp } from 'lucide-react';
+import Papa from 'papaparse';
 
 export default function ProductPL() {
-  const { discountTiers, getProductPL, updateProduct, addProduct, deleteProduct } = useStore();
+  const { products, discountTiers, getProductPL, updateProduct, addProduct, deleteProduct } = useStore();
   const plData = getProductPL();
 
   const [productModal, setProductModal] = useState({ isOpen: false, mode: 'add', product: null });
   const [editName, setEditName] = useState('');
   const [editVolume, setEditVolume] = useState('');
   const [editMrp, setEditMrp] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const fileInputRef = useRef(null);
 
   const openAdd = () => {
     setProductModal({ isOpen: true, mode: 'add', product: null });
@@ -24,6 +29,11 @@ export default function ProductPL() {
     setEditName(product.product);
     setEditVolume(product.volume.toString());
     setEditMrp(product.mrp.toString());
+  };
+
+  const clearMessages = () => {
+    setError('');
+    setSuccess('');
   };
 
   const handleSave = () => {
@@ -57,15 +67,100 @@ export default function ProductPL() {
     }
   };
 
+  const handleCsvUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    clearMessages();
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        let addedCount = 0;
+        let updatedCount = 0;
+        let skippedCount = 0;
+
+        results.data.forEach(row => {
+          // Flexible column matching
+          const name = row['Product Name'] || row['Product'] || row['name'] || row['product'];
+          const volumeStr = row['Volume'] || row['volume'];
+          const mrpStr = row['MRP'] || row['mrp'] || row['MRP (₹)'];
+
+          if (!name || !volumeStr || !mrpStr) {
+            skippedCount++;
+            return;
+          }
+
+          const volume = parseFloat(volumeStr);
+          const mrp = parseFloat(mrpStr);
+
+          if (isNaN(volume) || isNaN(mrp)) {
+            skippedCount++;
+            return;
+          }
+
+          const existingProduct = products.find(p => p.name.toLowerCase() === name.trim().toLowerCase());
+          
+          if (existingProduct) {
+            updateProduct(existingProduct.id, { name: existingProduct.name, volume, mrp });
+            updatedCount++;
+          } else {
+            addProduct({ name: name.trim(), volume, mrp });
+            addedCount++;
+          }
+        });
+
+        if (addedCount === 0 && updatedCount === 0) {
+          setError(`No valid products imported. Check your CSV format (expected columns: Product Name, Volume, MRP). Skipped ${skippedCount} rows.`);
+        } else {
+          setSuccess(`Successfully added ${addedCount} and updated ${updatedCount} products. Skipped ${skippedCount} invalid rows.`);
+          setTimeout(() => setSuccess(''), 5000);
+        }
+      },
+      error: (err) => {
+        console.error(err);
+        setError('Error parsing CSV file.');
+      }
+    });
+
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <h1 className="text-2xl font-bold text-gray-900">Master Product Price List</h1>
-        <Button onClick={openAdd} className="bg-blue-600 hover:bg-blue-700 text-white shrink-0">
-          <Plus className="w-4 h-4 mr-2" />
-          Add Product
-        </Button>
+        <div className="flex items-center gap-3">
+          <input 
+            type="file" 
+            accept=".csv" 
+            ref={fileInputRef} 
+            className="hidden" 
+            onChange={handleCsvUpload}
+          />
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="shrink-0">
+            <FileUp className="w-4 h-4 mr-2" />
+            Import CSV
+          </Button>
+          <Button onClick={openAdd} className="bg-blue-600 hover:bg-blue-700 text-white shrink-0">
+            <Plus className="w-4 h-4 mr-2" />
+            Add Product
+          </Button>
+        </div>
       </div>
+
+      {error && (
+        <div className="p-4 bg-rose-50 text-rose-700 rounded-xl text-sm border border-rose-100 font-medium">
+          {error}
+        </div>
+      )}
+      
+      {success && (
+        <div className="p-4 bg-green-50 text-green-700 rounded-xl text-sm border border-green-100 font-medium">
+          {success}
+        </div>
+      )}
 
       <Card className="overflow-x-auto">
         <table className="w-full text-sm text-left text-slate-700 bg-white min-w-max">
