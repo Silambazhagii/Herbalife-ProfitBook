@@ -9,7 +9,8 @@ import {
   Activity,
   Menu,
   X,
-  Users
+  Users,
+  History
 } from 'lucide-react';
 import { cn } from '../ui';
 
@@ -20,6 +21,7 @@ const navItems = [
   { name: 'PMR (Purchases)', path: '/pmr', icon: TrendingDown },
   { name: 'SMR (Sales)', path: '/smr', icon: TrendingUp },
   { name: 'Product PL', path: '/product-pl', icon: Activity },
+  { name: 'Price History', path: '/price-history', icon: History },
   { name: 'Vendor & Customer', path: '/vendor-customer', icon: Users },
 ];
 

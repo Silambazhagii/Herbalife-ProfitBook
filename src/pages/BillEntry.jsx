@@ -5,8 +5,11 @@ import { CheckCircle2, Trash2, FileUp } from 'lucide-react';
 import { format } from 'date-fns';
 import * as pdfjsLib from 'pdfjs-dist';
 
-// Use CDN for worker to avoid Vite build issues
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+// Use local worker bundled via Vite to avoid CORS and version mismatch issues
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).toString();
 
 export default function BillEntry() {
   const { addTransaction, getStock, products, discountTiers, vendors, customers } = useStore();

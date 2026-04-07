@@ -137,6 +137,7 @@ export const useStore = create(
       vendors: initialVendors,
       customers: initialCustomers,
       discountTiers: [5, 10, 15, 20, 25, 35, 42, 50],
+      priceHistory: [],
 
       // Actions
       addTransaction: (transaction) =>
@@ -197,6 +198,13 @@ export const useStore = create(
         set((state) => ({
           customers: state.customers.filter((c) => c !== customerName),
         })),
+
+      addPriceHistorySnapshot: (snapshot) =>
+        set((state) => {
+          // Keep only the latest 30 snapshots to avoid LocalStorage limits
+          const updatedHistory = [snapshot, ...state.priceHistory].slice(0, 30);
+          return { priceHistory: updatedHistory };
+        }),
 
       // Computed Data (Selectors)
       getStock: () => {
@@ -277,7 +285,7 @@ export const useStore = create(
     }),
     {
       name: 'profitbook-storage',
-      version: 7,
+      version: 8,
       migrate: (persistedState, version) => {
         if (version < 7) {
           persistedState.products = initialProducts;
@@ -285,6 +293,9 @@ export const useStore = create(
           persistedState.customers = initialCustomers;
           persistedState.transactions = initialTransactions;
           persistedState.discountTiers = [5, 10, 15, 20, 25, 35, 42, 50];
+        }
+        if (version < 8) {
+          persistedState.priceHistory = [];
         }
         return persistedState;
       }

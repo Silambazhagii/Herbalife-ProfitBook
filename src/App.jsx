@@ -9,6 +9,7 @@ import PMR from './pages/PMR';
 import SMR from './pages/SMR';
 import ProductPL from './pages/ProductPL';
 import VendorCustomer from './pages/VendorCustomer';
+import PriceHistory from './pages/PriceHistory';
 
 function App() {
   return (
@@ -21,6 +22,7 @@ function App() {
           <Route path="pmr" element={<PMR />} />
           <Route path="smr" element={<SMR />} />
           <Route path="product-pl" element={<ProductPL />} />
+          <Route path="price-history" element={<PriceHistory />} />
           <Route path="vendor-customer" element={<VendorCustomer />} />
         </Route>
       </Routes>

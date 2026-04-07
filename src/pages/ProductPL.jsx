@@ -3,9 +3,17 @@ import { useStore } from '../store/useStore';
 import { Card, Button, Input, Modal } from '../components/ui';
 import { Edit2, Calculator, Plus, Trash2, FileUp } from 'lucide-react';
 import Papa from 'papaparse';
+import * as pdfjsLib from 'pdfjs-dist';
+import Tesseract from 'tesseract.js';
+
+// Setup pdf worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).toString();
 
 export default function ProductPL() {
-  const { products, discountTiers, getProductPL, updateProduct, addProduct, deleteProduct } = useStore();
+  const { products, discountTiers, getProductPL, updateProduct, addProduct, deleteProduct, addPriceHistorySnapshot } = useStore();
   const plData = getProductPL();
 
   const [productModal, setProductModal] = useState({ isOpen: false, mode: 'add', product: null });
@@ -14,6 +22,7 @@ export default function ProductPL() {
   const [editMrp, setEditMrp] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [isParsing, setIsParsing] = useState(false);
 
   const fileInputRef = useRef(null);
 
@@ -67,63 +76,226 @@ export default function ProductPL() {
     }
   };
 
-  const handleCsvUpload = (e) => {
+  const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     clearMessages();
+    setIsParsing(true);
 
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        let addedCount = 0;
-        let updatedCount = 0;
-        let skippedCount = 0;
+    const fileType = file.name.split('.').pop().toLowerCase();
 
-        results.data.forEach(row => {
-          // Flexible column matching
-          const name = row['Product Name'] || row['Product'] || row['name'] || row['product'];
-          const volumeStr = row['Volume'] || row['volume'];
-          const mrpStr = row['MRP'] || row['mrp'] || row['MRP (₹)'];
+    // --- CSV PARSING ---
+    if (fileType === 'csv') {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => {
+          processExtractedDataArray(results.data.map(row => ({
+            name: row['Product Name'] || row['Product'] || row['name'] || row['product'],
+            volume: parseFloat(row['Volume'] || row['volume']),
+            mrp: parseFloat(row['MRP'] || row['mrp'] || row['MRP (₹)'])
+          })));
+        },
+        error: (err) => {
+          console.error(err);
+          setError('Error parsing CSV file.');
+          setIsParsing(false);
+          resetFileInput();
+        }
+      });
+      return;
+    }
 
-          if (!name || !volumeStr || !mrpStr) {
-            skippedCount++;
-            return;
-          }
-
-          const volume = parseFloat(volumeStr);
-          const mrp = parseFloat(mrpStr);
-
-          if (isNaN(volume) || isNaN(mrp)) {
-            skippedCount++;
-            return;
-          }
-
-          const existingProduct = products.find(p => p.name.toLowerCase() === name.trim().toLowerCase());
+    // --- PDF / IMAGE PARSING ---
+    try {
+      let fullText = '';
+      
+      if (fileType === 'pdf') {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
           
-          if (existingProduct) {
-            updateProduct(existingProduct.id, { name: existingProduct.name, volume, mrp });
-            updatedCount++;
-          } else {
-            addProduct({ name: name.trim(), volume, mrp });
-            addedCount++;
+          // Sort items geometrically line-by-line (Y descending, X ascending)
+          const items = textContent.items.map(item => ({
+            str: item.str,
+            x: item.transform[4],
+            y: item.transform[5]
+          }));
+          
+          items.sort((a, b) => {
+            if (Math.abs(a.y - b.y) < 5) return a.x - b.x;
+            return b.y - a.y;
+          });
+          
+          fullText += items.map(item => item.str).join(' ') + ' ';
+        }
+      } else if (['jpg', 'jpeg', 'png', 'webp'].includes(fileType)) {
+        const result = await Tesseract.recognize(file, 'eng');
+        fullText = result.data.text;
+      } else {
+        setError('Unsupported file type. Please upload a CSV, PDF, or Image.');
+        setIsParsing(false);
+        resetFileInput();
+        return;
+      }
+
+      const isInvoice = fullText.includes('HSN/SAC') || fullText.includes('HSN/ SAC');
+      const extractedItems = [];
+
+      if (isInvoice) {
+        // Herbalife Invoice specific extraction
+        const parts = fullText.split(/HSN\/?\s*SAC/i);
+        
+        const getWords = (str) => {
+           return str.toLowerCase()
+                     .replace(/[^a-z0-9]/g, ' ')
+                     .split(/\s+/)
+                     .filter(w => w.length > 2 && !['and', 'for', 'mix', 'tablets', 'softgels', 'powder', 'flavour', 'units', 'hsn', 'sac'].includes(w));
+        };
+
+        for (let i = 0; i < parts.length - 1; i++) {
+          const before = parts[i];
+          const after = parts[i + 1];
+          
+          const rawName = before.slice(-200);
+          const rawWords = getWords(rawName);
+
+          let bestMatch = null;
+          let bestScore = 0;
+
+          products.forEach(p => {
+             const pWords = getWords(p.name);
+             if (pWords.length === 0) return;
+             
+             let matchCount = 0;
+             pWords.forEach(pw => {
+                // Strict inclusion to avoid false matches (word must explicitly match or be a strong substring)
+                if (rawWords.some(rw => rw === pw || (rw.length > 4 && pw.includes(rw)) || (pw.length > 4 && rw.includes(pw)))) {
+                   matchCount++;
+                }
+             });
+             
+             const score = matchCount / pWords.length;
+             // High confidence threshold 
+             if (score > 0.60 && score > bestScore) { 
+                 bestScore = score;
+                 bestMatch = p;
+             }
+          });
+
+          if (bestMatch) {
+            // After HSN/SAC, sequence is always: [SAC Code] [Qty] [Retail Rate] [Total]...
+            // Extract the next 50 chars, split by space, clean commas, and parse floats
+            const afterSegment = after.substring(0, 100);
+            const afterNumbers = afterSegment.trim().split(/\s+/)
+                                    .map(n => parseFloat(n.replace(/,/g, '')))
+                                    .filter(n => !isNaN(n));
+            
+            // Validate sequence (Code = 8 digits usually, Qty, Rate)
+            // Minimum 3 numbers required to be a valid invoice row (Annexure rows have fewer)
+            if (afterNumbers.length >= 3 && afterNumbers[0] > 1000) { 
+              const mrp = afterNumbers[2];
+              
+              if (mrp > 0) { // Safety check to avoid 0.00 or 1.00 anomalies from weird text
+                const existingIndex = extractedItems.findIndex(e => e.name === bestMatch.name);
+                if (existingIndex >= 0) {
+                   extractedItems[existingIndex].mrp = mrp;
+                } else {
+                   extractedItems.push({ name: bestMatch.name, volume: bestMatch.volume, mrp });
+                }
+              }
+            }
+          }
+        }
+      } else {
+        // Standard Price List parsing
+        products.forEach(p => {
+          const flexiName = p.name.split(/[^a-zA-Z0-9]+/).filter(Boolean).join('[^a-zA-Z0-9]+');
+          const regex = new RegExp(flexiName + '[^0-9]*?(\\d+(?:\\.\\d+)?)[^0-9]*?(\\d+(?:\\.\\d+)?)', 'i');
+          const match = fullText.match(regex);
+          
+          if (match) {
+            const num1 = parseFloat(match[1]);
+            const num2 = parseFloat(match[2]);
+            const volume = Math.min(num1, num2);
+            const mrp = Math.max(num1, num2);
+            extractedItems.push({ name: p.name, volume, mrp });
           }
         });
+      }
 
-        if (addedCount === 0 && updatedCount === 0) {
-          setError(`No valid products imported. Check your CSV format (expected columns: Product Name, Volume, MRP). Skipped ${skippedCount} rows.`);
-        } else {
-          setSuccess(`Successfully added ${addedCount} and updated ${updatedCount} products. Skipped ${skippedCount} invalid rows.`);
-          setTimeout(() => setSuccess(''), 5000);
-        }
-      },
-      error: (err) => {
-        console.error(err);
-        setError('Error parsing CSV file.');
+      processExtractedDataArray(extractedItems);
+    } catch (err) {
+      console.error(err);
+      setError(`Error parsing ${fileType.toUpperCase()} document. The visual format might be too complex for offline extraction.`);
+      setIsParsing(false);
+      resetFileInput();
+    }
+  };
+
+  const processExtractedDataArray = (items) => {
+    let addedCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+    let updatedProductsList = [...products];
+
+    items.forEach(data => {
+      const { name, volume, mrp } = data;
+
+      if (!name || isNaN(volume) || isNaN(mrp)) {
+        skippedCount++;
+        return;
+      }
+
+      const existingIndex = updatedProductsList.findIndex(p => p.name.toLowerCase() === name.trim().toLowerCase());
+      
+      if (existingIndex >= 0) {
+        updatedProductsList[existingIndex] = { ...updatedProductsList[existingIndex], volume, mrp };
+        updateProduct(updatedProductsList[existingIndex].id, { name: updatedProductsList[existingIndex].name, volume, mrp });
+        updatedCount++;
+      } else {
+        updatedProductsList.push({ name: name.trim(), volume, mrp });
+        addProduct({ name: name.trim(), volume, mrp });
+        addedCount++;
       }
     });
 
+    if (addedCount > 0 || updatedCount > 0) {
+      const snapshotProducts = updatedProductsList.map(p => {
+        const margins = {};
+        discountTiers.forEach(tier => {
+          margins[tier] = p.mrp - (p.mrp * (tier / 100));
+        });
+        return {
+          productName: p.name,
+          volume: p.volume,
+          mrp: p.mrp,
+          discounts: margins
+        };
+      });
+
+      addPriceHistorySnapshot({
+        id: crypto.randomUUID(),
+        uploadDate: new Date().toISOString(),
+        products: snapshotProducts
+      });
+    }
+
+    if (addedCount === 0 && updatedCount === 0) {
+      setError(`No valid products found. Skipped ${skippedCount} invalid rows / unreadable matches.`);
+    } else {
+      setSuccess(`Extracted and processed ${addedCount + updatedCount} products, and saved a Price History snapshot. Skipped ${skippedCount} invalid items.`);
+      setTimeout(() => setSuccess(''), 5000);
+    }
+    
+    setIsParsing(false);
+    resetFileInput();
+  };
+
+  const resetFileInput = () => {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -134,14 +306,14 @@ export default function ProductPL() {
         <div className="flex items-center gap-3">
           <input 
             type="file" 
-            accept=".csv" 
+            accept=".csv, .pdf, .jpg, .jpeg, .png, .webp" 
             ref={fileInputRef} 
             className="hidden" 
-            onChange={handleCsvUpload}
+            onChange={handleFileUpload}
           />
-          <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="shrink-0">
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="shrink-0" disabled={isParsing}>
             <FileUp className="w-4 h-4 mr-2" />
-            Import CSV
+            {isParsing ? 'Parsing Document...' : 'Import Document'}
           </Button>
           <Button onClick={openAdd} className="bg-blue-600 hover:bg-blue-700 text-white shrink-0">
             <Plus className="w-4 h-4 mr-2" />
@@ -162,11 +334,14 @@ export default function ProductPL() {
         </div>
       )}
 
-      <Card className="overflow-x-auto">
+      <div className="md:hidden flex items-center justify-end mb-2 text-xs text-slate-500 font-medium">
+        <span className="animate-pulse opacity-75">↔ Swipe to view columns</span>
+      </div>
+      <Card className="overflow-x-auto scroll-smooth webkit-overflow-scrolling-touch">
         <table className="w-full text-sm text-left text-slate-700 bg-white min-w-max">
           <thead className="bg-gray-50 text-xs uppercase text-gray-500 border-b border-gray-100">
             <tr>
-              <th scope="col" className="px-6 py-4 font-semibold">Products</th>
+              <th scope="col" className="px-6 py-4 font-semibold bg-gray-50 md:sticky md:left-0 md:z-10 md:shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">Products</th>
               <th scope="col" className="px-6 py-4 font-semibold text-right">Vol.</th>
               <th scope="col" className="px-6 py-4 font-semibold text-right border-r border-gray-200">MRP (₹)</th>
               {discountTiers.map(tier => (
@@ -190,7 +365,7 @@ export default function ProductPL() {
             ) : (
               plData.map((item) => (
                 <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
-                  <td className="px-6 py-4 font-medium text-gray-900 bg-white sticky left-0 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] max-w-xs truncate" title={item.product}>
+                  <td className="px-6 py-4 font-medium text-gray-900 bg-white md:sticky md:left-0 md:z-10 md:shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] max-w-xs truncate" title={item.product}>
                     {item.product}
                   </td>
                   <td className="px-6 py-4 text-right text-gray-600">{item.volume}</td>
