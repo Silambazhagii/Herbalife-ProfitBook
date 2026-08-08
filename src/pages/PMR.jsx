@@ -1,14 +1,23 @@
-import React from 'react';
-import { useStore } from '../store/useStore';
+import React, { useMemo } from 'react';
+import { useTransactionStore } from '../store/transactionStore';
 import { Card } from '../components/ui';
 import { format } from 'date-fns';
 import { FileDown, Trash2 } from 'lucide-react';
+import { calculatePurchaseValue } from '../utils/calculationEngine';
 
 export default function PMR() {
-  const { transactions, deleteTransaction } = useStore();
-  const purchases = transactions.filter(t => t.type === 'purchase').sort((a,b) => new Date(a.date) - new Date(b.date));
+  const transactions = useTransactionStore(s => s.transactions);
+  const deleteTransaction = useTransactionStore(s => s.deleteTransaction);
 
-  const totalPurchases = purchases.reduce((sum, tx) => sum + (Number(tx.qty) * Number(tx.rate)), 0);
+  const purchases = useMemo(() => {
+    return transactions
+      .filter(t => t.type === 'purchase')
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+  }, [transactions]);
+
+  const totalPurchases = useMemo(() => {
+    return purchases.reduce((sum, tx) => sum + calculatePurchaseValue(tx.qty, tx.rate), 0);
+  }, [purchases]);
 
   const handleDelete = (id) => {
     if (window.confirm("Are you sure you want to delete this purchase record?")) {
@@ -22,7 +31,7 @@ export default function PMR() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold text-slate-900">Purchase Master Record (PMR)</h1>
+        <h1 className="text-2xl font-bold text-slate-900 font-sans">Purchase Master Record (PMR)</h1>
         <div className="mt-4 sm:mt-0 flex items-center gap-2 bg-blue-50 text-blue-700 px-4 py-2 rounded-lg font-semibold border border-blue-100 shadow-sm">
           Total Expenditure: ₹{totalPurchases.toLocaleString(undefined, { minimumFractionDigits: 2 })}
         </div>
@@ -64,7 +73,7 @@ export default function PMR() {
                 cumulativeVolume += rowVolume;
 
                 const rate = tx.rate || 0;
-                const rowPurchase = rate * qty;
+                const rowPurchase = calculatePurchaseValue(qty, rate);
                 cumulativePurchaseValue += rowPurchase;
 
                 return (

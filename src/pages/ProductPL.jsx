@@ -1,11 +1,16 @@
 import React, { useState, useRef } from 'react';
-import { useStore } from '../store/useStore';
+import { useProductsStore } from '../store/productsStore';
+import { usePriceStore } from '../store/priceStore';
+import { useInventoryStore } from '../store/inventoryStore';
 import { Card, Button, Input, Modal } from '../components/ui';
 import { Edit2, Calculator, Plus, Trash2, FileUp } from 'lucide-react';
 import Papa from 'papaparse';
 
 export default function ProductPL() {
-  const { products, discountTiers, getProductPL, updateProduct, addProduct, deleteProduct } = useStore();
+  const { products, discountTiers, updateProduct, addProduct, deleteProduct } = useProductsStore();
+  const addPriceHistorySnapshot = usePriceStore(s => s.addPriceHistorySnapshot);
+  const getProductPL = useInventoryStore(s => s.getProductPL);
+
   const plData = getProductPL();
 
   const [productModal, setProductModal] = useState({ isOpen: false, mode: 'add', product: null });
@@ -14,6 +19,7 @@ export default function ProductPL() {
   const [editMrp, setEditMrp] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [isParsing, setIsParsing] = useState(false);
 
   const fileInputRef = useRef(null);
 
@@ -36,7 +42,7 @@ export default function ProductPL() {
     setSuccess('');
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const vol = Number(editVolume);
     const mrp = Number(editMrp);
     
@@ -54,94 +60,129 @@ export default function ProductPL() {
     }
 
     if (productModal.mode === 'edit') {
-      updateProduct(productModal.product.id, { name: editName.trim(), volume: vol, mrp });
+      await updateProduct(productModal.product.id, { name: editName.trim(), volume: vol, mrp });
     } else {
-      addProduct({ name: editName.trim(), volume: vol, mrp });
+      await addProduct({ name: editName.trim(), volume: vol, mrp });
     }
     setProductModal({ isOpen: false, mode: 'add', product: null });
   };
 
-  const handleDelete = (id, name) => {
+  const handleDelete = async (id, name) => {
     if (window.confirm(`Are you sure you want to delete "${name}"?`)) {
-      deleteProduct(id);
+      await deleteProduct(id);
     }
   };
 
-  const handleCsvUpload = (e) => {
+  const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     clearMessages();
+    setIsParsing(true);
 
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        let addedCount = 0;
-        let updatedCount = 0;
-        let skippedCount = 0;
+    const fileType = file.name.split('.').pop().toLowerCase();
 
-        results.data.forEach(row => {
-          // Flexible column matching
-          const name = row['Product Name'] || row['Product'] || row['name'] || row['product'];
-          const volumeStr = row['Volume'] || row['volume'];
-          const mrpStr = row['MRP'] || row['mrp'] || row['MRP (₹)'];
-
-          if (!name || !volumeStr || !mrpStr) {
-            skippedCount++;
-            return;
-          }
-
-          const volume = parseFloat(volumeStr);
-          const mrp = parseFloat(mrpStr);
-
-          if (isNaN(volume) || isNaN(mrp)) {
-            skippedCount++;
-            return;
-          }
-
-          const existingProduct = products.find(p => p.name.toLowerCase() === name.trim().toLowerCase());
-          
-          if (existingProduct) {
-            updateProduct(existingProduct.id, { name: existingProduct.name, volume, mrp });
-            updatedCount++;
-          } else {
-            addProduct({ name: name.trim(), volume, mrp });
-            addedCount++;
-          }
-        });
-
-        if (addedCount === 0 && updatedCount === 0) {
-          setError(`No valid products imported. Check your CSV format (expected columns: Product Name, Volume, MRP). Skipped ${skippedCount} rows.`);
-        } else {
-          setSuccess(`Successfully added ${addedCount} and updated ${updatedCount} products. Skipped ${skippedCount} invalid rows.`);
-          setTimeout(() => setSuccess(''), 5000);
+    if (fileType === 'csv') {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => {
+          processExtractedDataArray(results.data.map(row => ({
+            name: row['Product Name'] || row['Product'] || row['name'] || row['product'],
+            volume: parseFloat(row['Volume'] || row['volume']),
+            mrp: parseFloat(row['MRP'] || row['mrp'] || row['MRP (₹)'])
+          })));
+        },
+        error: (err) => {
+          console.error(err);
+          setError('Error parsing CSV file.');
+          setIsParsing(false);
+          resetFileInput();
         }
-      },
-      error: (err) => {
-        console.error(err);
-        setError('Error parsing CSV file.');
-      }
-    });
+      });
+      return;
+    }
 
+    setError('Unsupported file type. Please upload a CSV file.');
+    setIsParsing(false);
+    resetFileInput();
+  };
+
+  const processExtractedDataArray = async (items) => {
+    let addedCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+    let updatedProductsList = [...products];
+
+    for (const data of items) {
+      const { name, volume, mrp } = data;
+
+      if (!name || isNaN(volume) || isNaN(mrp)) {
+        skippedCount++;
+        continue;
+      }
+
+      const existingIndex = updatedProductsList.findIndex(p => p.name.toLowerCase() === name.trim().toLowerCase());
+      
+      if (existingIndex >= 0) {
+        updatedProductsList[existingIndex] = { ...updatedProductsList[existingIndex], volume, mrp };
+        await updateProduct(updatedProductsList[existingIndex].id, { name: updatedProductsList[existingIndex].name, volume, mrp });
+        updatedCount++;
+      } else {
+        const newProd = { id: crypto.randomUUID(), name: name.trim(), volume, mrp };
+        updatedProductsList.push(newProd);
+        await addProduct(newProd);
+        addedCount++;
+      }
+    }
+
+    if (addedCount > 0 || updatedCount > 0) {
+      const snapshotProducts = updatedProductsList.map(p => {
+        const margins = {};
+        discountTiers.forEach(tier => {
+          margins[tier] = p.mrp - (p.mrp * (tier / 100));
+        });
+        return {
+          productName: p.name,
+          volume: p.volume,
+          mrp: p.mrp,
+          discounts: margins
+        };
+      });
+
+      await addPriceHistorySnapshot(snapshotProducts);
+    }
+
+    if (addedCount === 0 && updatedCount === 0) {
+      setError(`No valid products found. Skipped ${skippedCount} invalid rows.`);
+    } else {
+      setSuccess(`Extracted and processed ${addedCount + updatedCount} products, and saved a Price History snapshot. Skipped ${skippedCount} invalid items.`);
+      setTimeout(() => setSuccess(''), 5000);
+    }
+    
+    setIsParsing(false);
+    resetFileInput();
+  };
+
+  const resetFileInput = () => {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <h1 className="text-2xl font-bold text-gray-900">Master Product Price List</h1>
+        <h1 className="text-2xl font-bold text-gray-900 font-sans">Master Product Price List</h1>
         <div className="flex items-center gap-3">
           <input 
             type="file" 
             accept=".csv" 
             ref={fileInputRef} 
             className="hidden" 
-            onChange={handleCsvUpload}
+            onChange={handleFileUpload}
           />
-          <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="shrink-0">
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="shrink-0" disabled={isParsing}>
             <FileUp className="w-4 h-4 mr-2" />
-            Import CSV
+            {isParsing ? 'Importing CSV...' : 'Import CSV'}
           </Button>
           <Button onClick={openAdd} className="bg-blue-600 hover:bg-blue-700 text-white shrink-0">
             <Plus className="w-4 h-4 mr-2" />
@@ -162,11 +203,14 @@ export default function ProductPL() {
         </div>
       )}
 
-      <Card className="overflow-x-auto">
+      <div className="md:hidden flex items-center justify-end mb-2 text-xs text-slate-500 font-medium">
+        <span className="animate-pulse opacity-75">↔ Swipe to view columns</span>
+      </div>
+      <Card className="overflow-x-auto scroll-smooth webkit-overflow-scrolling-touch">
         <table className="w-full text-sm text-left text-slate-700 bg-white min-w-max">
           <thead className="bg-gray-50 text-xs uppercase text-gray-500 border-b border-gray-100">
             <tr>
-              <th scope="col" className="px-6 py-4 font-semibold">Products</th>
+              <th scope="col" className="px-6 py-4 font-semibold bg-gray-50 md:sticky md:left-0 md:z-10 md:shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">Products</th>
               <th scope="col" className="px-6 py-4 font-semibold text-right">Vol.</th>
               <th scope="col" className="px-6 py-4 font-semibold text-right border-r border-gray-200">MRP (₹)</th>
               {discountTiers.map(tier => (
@@ -188,9 +232,9 @@ export default function ProductPL() {
                </td>
              </tr>
             ) : (
-              plData.map((item) => (
+               plData.map((item) => (
                 <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
-                  <td className="px-6 py-4 font-medium text-gray-900 bg-white sticky left-0 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] max-w-xs truncate" title={item.product}>
+                  <td className="px-6 py-4 font-medium text-gray-900 bg-white md:sticky md:left-0 md:z-10 md:shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] max-w-xs truncate" title={item.product}>
                     {item.product}
                   </td>
                   <td className="px-6 py-4 text-right text-gray-600">{item.volume}</td>
@@ -265,7 +309,6 @@ export default function ProductPL() {
           </div>
         </div>
       </Modal>
-
     </div>
   );
 }

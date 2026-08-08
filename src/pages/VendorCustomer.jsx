@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { useStore } from '../store/useStore';
+import { useProductsStore } from '../store/productsStore';
 import { Card, Input, Button } from '../components/ui';
 import { Trash2, UserPlus, Building2 } from 'lucide-react';
 
 export default function VendorCustomer() {
-  const { vendors, customers, addVendor, deleteVendor, addCustomer, deleteCustomer } = useStore();
+  const { vendors, customers, addVendor, deleteVendor, addCustomer, deleteCustomer } = useProductsStore();
   
   const [newVendor, setNewVendor] = useState('');
   const [newCustomer, setNewCustomer] = useState('');
@@ -28,7 +28,7 @@ export default function VendorCustomer() {
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
       <div className="flex items-center gap-3">
-        <h1 className="text-2xl font-bold text-slate-900">Vendor & Customer Management</h1>
+        <h1 className="text-2xl font-bold text-slate-900 font-sans">Vendor & Customer Management</h1>
       </div>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
