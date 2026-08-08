@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { 
   LayoutDashboard, 
@@ -10,9 +10,14 @@ import {
   Menu,
   X,
   Users,
-  History
+  History,
+  FileText
 } from 'lucide-react';
 import { cn } from '../ui';
+import { useProductsStore } from '../../store/productsStore';
+import { useTransactionStore } from '../../store/transactionStore';
+import { usePriceStore } from '../../store/priceStore';
+import { useAuditStore } from '../../store/auditStore';
 
 const navItems = [
   { name: 'Dashboard', path: '/', icon: LayoutDashboard },
@@ -23,10 +28,19 @@ const navItems = [
   { name: 'Product PL', path: '/product-pl', icon: Activity },
   { name: 'Price History', path: '/price-history', icon: History },
   { name: 'Vendor & Customer', path: '/vendor-customer', icon: Users },
+  { name: 'Reports', path: '/reports', icon: FileText },
 ];
+
 
 export function Layout() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  useEffect(() => {
+    useProductsStore.getState().loadProducts();
+    useTransactionStore.getState().loadTransactions();
+    usePriceStore.getState().loadPriceHistory();
+    useAuditStore.getState().loadAuditLogs();
+  }, []);
 
   return (
     <div className="flex h-screen w-full bg-slate-50 overflow-hidden font-sans">

@@ -1,16 +1,22 @@
-import React from 'react';
-import { useStore } from '../store/useStore';
+import React, { useMemo } from 'react';
+import { useTransactionStore } from '../store/transactionStore';
+import { useProductsStore } from '../store/productsStore';
 import { Card } from '../components/ui';
 import { format } from 'date-fns';
 import { FileUp, Trash2 } from 'lucide-react';
+import { runFIFOEngine } from '../utils/calculationEngine';
 
 export default function SMR() {
-  const { transactions, deleteTransaction } = useStore();
-  
-  const purchases = transactions.filter(t => t.type === 'purchase');
-  const sales = transactions.filter(t => t.type === 'sale').sort((a,b) => new Date(a.date) - new Date(b.date));
+  const transactions = useTransactionStore(s => s.transactions);
+  const products = useProductsStore(s => s.products);
+  const deleteTransaction = useTransactionStore(s => s.deleteTransaction);
 
-  const totalSalesOverall = sales.reduce((sum, tx) => sum + (Number(tx.qty) * Number(tx.rate)), 0);
+  const { sales, totalSalesOverall } = useMemo(() => {
+    const { salesDetails } = runFIFOEngine(transactions, products);
+    const sortedSales = salesDetails.sort((a, b) => new Date(a.date) - new Date(b.date));
+    const total = sortedSales.reduce((sum, s) => sum + s.salesValue, 0);
+    return { sales: sortedSales, totalSalesOverall: total };
+  }, [transactions, products]);
 
   const handleDelete = (id) => {
     if (window.confirm("Are you sure you want to delete this sales record?")) {
@@ -25,7 +31,7 @@ export default function SMR() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold text-slate-900">Sales Master Record (SMR)</h1>
+        <h1 className="text-2xl font-bold text-slate-900 font-sans">Sales Master Record (SMR)</h1>
         <div className="mt-4 sm:mt-0 flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-lg font-semibold border border-emerald-100 shadow-sm">
           Total Revenue: ₹{totalSalesOverall.toLocaleString(undefined, { minimumFractionDigits: 2 })}
         </div>
@@ -43,10 +49,10 @@ export default function SMR() {
               <th className="px-4 py-4 font-semibold text-right border-r border-slate-100">%</th>
               <th className="px-4 py-4 font-semibold text-right">VOLUME</th>
               <th className="px-4 py-4 font-semibold text-right border-r border-slate-100 bg-blue-50/30">CUM.VOLUME</th>
-              <th className="px-4 py-4 font-semibold text-right">PURCHASE RATE</th>
+              <th className="px-4 py-4 font-semibold text-right">PURCHASE RATE (FIFO)</th>
               <th className="px-4 py-4 font-semibold text-right">SALES RATE</th>
               <th className="px-4 py-4 font-semibold text-right border-r border-slate-200">CUM SALES</th>
-              <th className="px-4 py-4 font-semibold text-right">PROFIT</th>
+              <th className="px-4 py-4 font-semibold text-right">PROFIT (FIFO)</th>
               <th className="px-4 py-4 font-semibold text-right">CUM PROFIT</th>
               <th className="px-4 py-4 font-semibold text-center">Actions</th>
             </tr>
@@ -70,24 +76,8 @@ export default function SMR() {
                 cumulativeVolume += rowVolume;
 
                 const salesRate = tx.rate || 0;
-                const rowSales = salesRate * qty;
-                cumulativeSales += rowSales;
-
-                // For Profit, we need to find the specific purchase rate used for this product & discount
-                // However, our data model stores tx.rate as the actual rate the sale happened at.
-                // In Excel, Profit = (Sales Rate - Purchase Rate) * Qty.
-                // For simplicity and accuracy based on User Excel: 
-                // We'll calculate "Purchase Rate" as a 35% discount (default purchase level) or match logic.
-                // Standard Profit calculation: Sales Value - Cost of Goods Sold.
-                
-                // Fetch Average Purchase Rate for this product to match Excel logic
-                const productPurchases = purchases.filter(p => p.product === tx.product);
-                const purchaseRate = productPurchases.length > 0 
-                  ? productPurchases.reduce((sum, p) => sum + p.rate, 0) / productPurchases.length
-                  : salesRate * 0.65; // Fallback estimate
-
-                const profit = (salesRate - purchaseRate) * qty;
-                cumulativeProfit += profit;
+                cumulativeSales += tx.salesValue;
+                cumulativeProfit += tx.grossProfit;
 
                 return (
                   <tr key={tx.id} className="border-b border-slate-100 hover:bg-slate-50/80 transition-colors">
@@ -99,11 +89,11 @@ export default function SMR() {
                     <td className="px-4 py-4 text-right border-r border-slate-100 font-semibold text-emerald-600">{tx.discountPercent || 0}</td>
                     <td className="px-4 py-4 text-right">{volume}</td>
                     <td className="px-4 py-4 text-right font-bold text-blue-700 bg-blue-50/30 border-r border-slate-100">{cumulativeVolume.toFixed(2)}</td>
-                    <td className="px-4 py-4 text-right text-slate-400">{purchaseRate.toFixed(2)}</td>
-                    <td className="px-4 py-4 text-right font-bold text-slate-900">{salesRate.toFixed(2)}</td>
-                    <td className="px-4 py-4 text-right font-black text-slate-900 border-r border-slate-200">{cumulativeSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                    <td className="px-4 py-4 text-right text-slate-400">₹{tx.avgPurchaseRateUsed.toFixed(2)}</td>
+                    <td className="px-4 py-4 text-right font-bold text-slate-900">₹{salesRate.toFixed(2)}</td>
+                    <td className="px-4 py-4 text-right font-black text-slate-900 border-r border-slate-200">₹{cumulativeSales.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                     
-                    <td className="px-4 py-4 text-right font-bold text-emerald-600">₹{profit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                    <td className="px-4 py-4 text-right font-bold text-emerald-600">₹{tx.grossProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                     <td className="px-4 py-4 text-right font-black bg-emerald-50/30 text-emerald-700">₹{cumulativeProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                     
                     <td className="px-4 py-4 text-center">

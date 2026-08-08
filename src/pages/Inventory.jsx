@@ -1,16 +1,16 @@
 import React from 'react';
-import { useStore } from '../store/useStore';
+import { useInventoryStore } from '../store/inventoryStore';
 import { Card } from '../components/ui';
 import { PackageX } from 'lucide-react';
 
 export default function Inventory() {
-  const { getStock } = useStore();
+  const getStock = useInventoryStore(s => s.getStock);
   const stockData = getStock().filter(item => item.totalPurchased > 0 || item.totalSold > 0);
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-bold text-slate-900">Inventory Management (Stock)</h1>
+        <h1 className="text-2xl font-bold text-slate-900 font-sans">Inventory Management (Stock)</h1>
       </div>
 
       <Card className="overflow-x-auto border-none shadow-premium">

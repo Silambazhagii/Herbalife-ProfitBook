@@ -1,19 +1,16 @@
 import React, { useState, useRef } from 'react';
-import { useStore } from '../store/useStore';
+import { useProductsStore } from '../store/productsStore';
+import { usePriceStore } from '../store/priceStore';
+import { useInventoryStore } from '../store/inventoryStore';
 import { Card, Button, Input, Modal } from '../components/ui';
 import { Edit2, Calculator, Plus, Trash2, FileUp } from 'lucide-react';
 import Papa from 'papaparse';
-import * as pdfjsLib from 'pdfjs-dist';
-import Tesseract from 'tesseract.js';
-
-// Setup pdf worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
-).toString();
 
 export default function ProductPL() {
-  const { products, discountTiers, getProductPL, updateProduct, addProduct, deleteProduct, addPriceHistorySnapshot } = useStore();
+  const { products, discountTiers, updateProduct, addProduct, deleteProduct } = useProductsStore();
+  const addPriceHistorySnapshot = usePriceStore(s => s.addPriceHistorySnapshot);
+  const getProductPL = useInventoryStore(s => s.getProductPL);
+
   const plData = getProductPL();
 
   const [productModal, setProductModal] = useState({ isOpen: false, mode: 'add', product: null });
@@ -45,7 +42,7 @@ export default function ProductPL() {
     setSuccess('');
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const vol = Number(editVolume);
     const mrp = Number(editMrp);
     
@@ -63,16 +60,16 @@ export default function ProductPL() {
     }
 
     if (productModal.mode === 'edit') {
-      updateProduct(productModal.product.id, { name: editName.trim(), volume: vol, mrp });
+      await updateProduct(productModal.product.id, { name: editName.trim(), volume: vol, mrp });
     } else {
-      addProduct({ name: editName.trim(), volume: vol, mrp });
+      await addProduct({ name: editName.trim(), volume: vol, mrp });
     }
     setProductModal({ isOpen: false, mode: 'add', product: null });
   };
 
-  const handleDelete = (id, name) => {
+  const handleDelete = async (id, name) => {
     if (window.confirm(`Are you sure you want to delete "${name}"?`)) {
-      deleteProduct(id);
+      await deleteProduct(id);
     }
   };
 
@@ -85,7 +82,6 @@ export default function ProductPL() {
 
     const fileType = file.name.split('.').pop().toLowerCase();
 
-    // --- CSV PARSING ---
     if (fileType === 'csv') {
       Papa.parse(file, {
         header: true,
@@ -107,161 +103,38 @@ export default function ProductPL() {
       return;
     }
 
-    // --- PDF / IMAGE PARSING ---
-    try {
-      let fullText = '';
-      
-      if (fileType === 'pdf') {
-        const arrayBuffer = await file.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-          
-          // Sort items geometrically line-by-line (Y descending, X ascending)
-          const items = textContent.items.map(item => ({
-            str: item.str,
-            x: item.transform[4],
-            y: item.transform[5]
-          }));
-          
-          items.sort((a, b) => {
-            if (Math.abs(a.y - b.y) < 5) return a.x - b.x;
-            return b.y - a.y;
-          });
-          
-          fullText += items.map(item => item.str).join(' ') + ' ';
-        }
-      } else if (['jpg', 'jpeg', 'png', 'webp'].includes(fileType)) {
-        const result = await Tesseract.recognize(file, 'eng');
-        fullText = result.data.text;
-      } else {
-        setError('Unsupported file type. Please upload a CSV, PDF, or Image.');
-        setIsParsing(false);
-        resetFileInput();
-        return;
-      }
-
-      const isInvoice = fullText.includes('HSN/SAC') || fullText.includes('HSN/ SAC');
-      const extractedItems = [];
-
-      if (isInvoice) {
-        // Herbalife Invoice specific extraction
-        const parts = fullText.split(/HSN\/?\s*SAC/i);
-        
-        const getWords = (str) => {
-           return str.toLowerCase()
-                     .replace(/[^a-z0-9]/g, ' ')
-                     .split(/\s+/)
-                     .filter(w => w.length > 2 && !['and', 'for', 'mix', 'tablets', 'softgels', 'powder', 'flavour', 'units', 'hsn', 'sac'].includes(w));
-        };
-
-        for (let i = 0; i < parts.length - 1; i++) {
-          const before = parts[i];
-          const after = parts[i + 1];
-          
-          const rawName = before.slice(-200);
-          const rawWords = getWords(rawName);
-
-          let bestMatch = null;
-          let bestScore = 0;
-
-          products.forEach(p => {
-             const pWords = getWords(p.name);
-             if (pWords.length === 0) return;
-             
-             let matchCount = 0;
-             pWords.forEach(pw => {
-                // Strict inclusion to avoid false matches (word must explicitly match or be a strong substring)
-                if (rawWords.some(rw => rw === pw || (rw.length > 4 && pw.includes(rw)) || (pw.length > 4 && rw.includes(pw)))) {
-                   matchCount++;
-                }
-             });
-             
-             const score = matchCount / pWords.length;
-             // High confidence threshold 
-             if (score > 0.60 && score > bestScore) { 
-                 bestScore = score;
-                 bestMatch = p;
-             }
-          });
-
-          if (bestMatch) {
-            // After HSN/SAC, sequence is always: [SAC Code] [Qty] [Retail Rate] [Total]...
-            // Extract the next 50 chars, split by space, clean commas, and parse floats
-            const afterSegment = after.substring(0, 100);
-            const afterNumbers = afterSegment.trim().split(/\s+/)
-                                    .map(n => parseFloat(n.replace(/,/g, '')))
-                                    .filter(n => !isNaN(n));
-            
-            // Validate sequence (Code = 8 digits usually, Qty, Rate)
-            // Minimum 3 numbers required to be a valid invoice row (Annexure rows have fewer)
-            if (afterNumbers.length >= 3 && afterNumbers[0] > 1000) { 
-              const mrp = afterNumbers[2];
-              
-              if (mrp > 0) { // Safety check to avoid 0.00 or 1.00 anomalies from weird text
-                const existingIndex = extractedItems.findIndex(e => e.name === bestMatch.name);
-                if (existingIndex >= 0) {
-                   extractedItems[existingIndex].mrp = mrp;
-                } else {
-                   extractedItems.push({ name: bestMatch.name, volume: bestMatch.volume, mrp });
-                }
-              }
-            }
-          }
-        }
-      } else {
-        // Standard Price List parsing
-        products.forEach(p => {
-          const flexiName = p.name.split(/[^a-zA-Z0-9]+/).filter(Boolean).join('[^a-zA-Z0-9]+');
-          const regex = new RegExp(flexiName + '[^0-9]*?(\\d+(?:\\.\\d+)?)[^0-9]*?(\\d+(?:\\.\\d+)?)', 'i');
-          const match = fullText.match(regex);
-          
-          if (match) {
-            const num1 = parseFloat(match[1]);
-            const num2 = parseFloat(match[2]);
-            const volume = Math.min(num1, num2);
-            const mrp = Math.max(num1, num2);
-            extractedItems.push({ name: p.name, volume, mrp });
-          }
-        });
-      }
-
-      processExtractedDataArray(extractedItems);
-    } catch (err) {
-      console.error(err);
-      setError(`Error parsing ${fileType.toUpperCase()} document. The visual format might be too complex for offline extraction.`);
-      setIsParsing(false);
-      resetFileInput();
-    }
+    setError('Unsupported file type. Please upload a CSV file.');
+    setIsParsing(false);
+    resetFileInput();
   };
 
-  const processExtractedDataArray = (items) => {
+  const processExtractedDataArray = async (items) => {
     let addedCount = 0;
     let updatedCount = 0;
     let skippedCount = 0;
     let updatedProductsList = [...products];
 
-    items.forEach(data => {
+    for (const data of items) {
       const { name, volume, mrp } = data;
 
       if (!name || isNaN(volume) || isNaN(mrp)) {
         skippedCount++;
-        return;
+        continue;
       }
 
       const existingIndex = updatedProductsList.findIndex(p => p.name.toLowerCase() === name.trim().toLowerCase());
       
       if (existingIndex >= 0) {
         updatedProductsList[existingIndex] = { ...updatedProductsList[existingIndex], volume, mrp };
-        updateProduct(updatedProductsList[existingIndex].id, { name: updatedProductsList[existingIndex].name, volume, mrp });
+        await updateProduct(updatedProductsList[existingIndex].id, { name: updatedProductsList[existingIndex].name, volume, mrp });
         updatedCount++;
       } else {
-        updatedProductsList.push({ name: name.trim(), volume, mrp });
-        addProduct({ name: name.trim(), volume, mrp });
+        const newProd = { id: crypto.randomUUID(), name: name.trim(), volume, mrp };
+        updatedProductsList.push(newProd);
+        await addProduct(newProd);
         addedCount++;
       }
-    });
+    }
 
     if (addedCount > 0 || updatedCount > 0) {
       const snapshotProducts = updatedProductsList.map(p => {
@@ -277,15 +150,11 @@ export default function ProductPL() {
         };
       });
 
-      addPriceHistorySnapshot({
-        id: crypto.randomUUID(),
-        uploadDate: new Date().toISOString(),
-        products: snapshotProducts
-      });
+      await addPriceHistorySnapshot(snapshotProducts);
     }
 
     if (addedCount === 0 && updatedCount === 0) {
-      setError(`No valid products found. Skipped ${skippedCount} invalid rows / unreadable matches.`);
+      setError(`No valid products found. Skipped ${skippedCount} invalid rows.`);
     } else {
       setSuccess(`Extracted and processed ${addedCount + updatedCount} products, and saved a Price History snapshot. Skipped ${skippedCount} invalid items.`);
       setTimeout(() => setSuccess(''), 5000);
@@ -302,18 +171,18 @@ export default function ProductPL() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <h1 className="text-2xl font-bold text-gray-900">Master Product Price List</h1>
+        <h1 className="text-2xl font-bold text-gray-900 font-sans">Master Product Price List</h1>
         <div className="flex items-center gap-3">
           <input 
             type="file" 
-            accept=".csv, .pdf, .jpg, .jpeg, .png, .webp" 
+            accept=".csv" 
             ref={fileInputRef} 
             className="hidden" 
             onChange={handleFileUpload}
           />
           <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="shrink-0" disabled={isParsing}>
             <FileUp className="w-4 h-4 mr-2" />
-            {isParsing ? 'Parsing Document...' : 'Import Document'}
+            {isParsing ? 'Importing CSV...' : 'Import CSV'}
           </Button>
           <Button onClick={openAdd} className="bg-blue-600 hover:bg-blue-700 text-white shrink-0">
             <Plus className="w-4 h-4 mr-2" />
@@ -363,7 +232,7 @@ export default function ProductPL() {
                </td>
              </tr>
             ) : (
-              plData.map((item) => (
+               plData.map((item) => (
                 <tr key={item.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                   <td className="px-6 py-4 font-medium text-gray-900 bg-white md:sticky md:left-0 md:z-10 md:shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] max-w-xs truncate" title={item.product}>
                     {item.product}
@@ -440,7 +309,6 @@ export default function ProductPL() {
           </div>
         </div>
       </Modal>
-
     </div>
   );
 }

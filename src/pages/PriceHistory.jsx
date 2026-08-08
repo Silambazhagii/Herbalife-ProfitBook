@@ -1,16 +1,27 @@
 import React, { useState, useMemo } from 'react';
-import { useStore } from '../store/useStore';
+import { usePriceStore } from '../store/priceStore';
+import { useProductsStore } from '../store/productsStore';
 import { Card, Input, Select } from '../components/ui';
-import { Search, History, Calendar, Calculator, TrendingUp, TrendingDown, ArrowRight } from 'lucide-react';
+import { Search, History, Calendar, Calculator, TrendingUp, TrendingDown } from 'lucide-react';
 
 export default function PriceHistory() {
-  const { priceHistory, discountTiers } = useStore();
+  const priceHistory = usePriceStore(s => s.priceHistory);
+  const discountTiers = useProductsStore(s => s.discountTiers);
+
   // Sort history chronologically (newest first)
   const sortedHistory = useMemo(() => {
     return [...priceHistory].sort((a,b) => new Date(b.uploadDate) - new Date(a.uploadDate));
   }, [priceHistory]);
 
-  const [selectedDate, setSelectedDate] = useState(sortedHistory.length > 0 ? sortedHistory[0].id : '');
+  const [selectedDate, setSelectedDate] = useState('');
+
+  // Auto select first snapshot if not set
+  useMemo(() => {
+    if (sortedHistory.length > 0 && !selectedDate) {
+      setSelectedDate(sortedHistory[0].id);
+    }
+  }, [sortedHistory, selectedDate]);
+
   const [searchQuery, setSearchQuery] = useState('');
 
   // Find the currently selected snapshot and the immediate previous one for diffing
@@ -39,9 +50,9 @@ export default function PriceHistory() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2 font-sans">
             <History className="w-6 h-6 text-blue-600" />
-            Price History
+            Price History & Variance snapshots
           </h1>
           <p className="text-sm text-gray-500 mt-1">View past snapshots of your product price lists.</p>
         </div>
